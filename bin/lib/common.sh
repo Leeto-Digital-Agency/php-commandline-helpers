@@ -197,6 +197,21 @@ ph_xdebug_loaded_externally() {
     return 1
 }
 
+# ph_strip_xdebug_load_from_ini <version> — remove any Xdebug zend_extension line
+# (commented or active) that pecl injected into php.ini, so Xdebug loading is
+# owned by the conf.d file instead and php.ini stays clean. No-op if absent.
+ph_strip_xdebug_load_from_ini() {
+    local version="$1" ini expr
+    ini="$(ph_php_ini "$version")"
+    [ -f "$ini" ] || return 0
+    expr='/^[[:space:]]*;?[[:space:]]*zend_extension[[:space:]]*=.*xdebug\.so/d'
+    if [ "$(ph_os)" = "macos" ]; then
+        sed -i '' -E "$expr" "$ini"
+    else
+        sudo sed -i -E "$expr" "$ini"
+    fi
+}
+
 # ph_xdebug_toggle <enable|disable> [version] — manage the tool-owned
 # conf.d/zz-xdebug.ini. enable writes a working debug config (mode=debug + a
 # zend_extension load line only if nothing else loads Xdebug); disable sets

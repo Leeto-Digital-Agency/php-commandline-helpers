@@ -28,6 +28,9 @@ if [ "$(ph_os)" = "macos" ]; then
     if [ -x "$pecl_bin" ]; then
         echo "Installing Xdebug via pecl..."
         "$pecl_bin" install xdebug || echo "Xdebug install skipped/failed (it may already be installed)."
+        # pecl appends a zend_extension line to php.ini; remove it so Xdebug
+        # loading is owned by conf.d (xdebug-enable) and php.ini stays clean.
+        ph_strip_xdebug_load_from_ini "$version"
     fi
 else
     sudo -v
