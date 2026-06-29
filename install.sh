@@ -22,7 +22,7 @@ echo "Installing helpers to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}/lib"
 
 # Commands are installed without the .sh extension so they read as plain commands.
-for name in switch-php install-php xdebug-enable xdebug-disable; do
+for name in switch-php install-php xdebug-enable xdebug-disable xdebug-run; do
     cp "${REPO_DIR}/bin/${name}.sh" "${INSTALL_DIR}/${name}"
     chmod +x "${INSTALL_DIR}/${name}"
 done

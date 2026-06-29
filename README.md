@@ -2,8 +2,9 @@
 
 A small set of cross-platform helpers for managing PHP-FPM versions. They work on
 both **macOS (Homebrew)** and **Linux (Debian/Ubuntu, apt)** — each command detects
-your OS and does the right thing. After installing you get four commands on your
-PATH: `switch-php`, `install-php`, `xdebug-enable`, and `xdebug-disable`.
+your OS and does the right thing. After installing you get these commands on your
+PATH: `switch-php`, `install-php`, `xdebug-enable`, `xdebug-disable`, and
+`xdebug-run`.
 
 ## Requirements
 
@@ -21,18 +22,8 @@ This copies the commands into `~/.local/bin` and adds that directory to your PAT
 in the right shell rc (`~/.zshrc` for zsh, `~/.bashrc` for bash). It's safe to
 re-run. Restart your shell (or `source` your rc file) afterwards.
 
-### Xdebug php.ini
-
-To use Xdebug for step-debugging, add the following to your `php.ini`:
-
-```ini
-[Xdebug]
-xdebug.mode=debug
-xdebug.start_with_request=trigger
-```
-
-On macOS the file lives at `$(brew --prefix)/etc/php/<version>/php.ini`; on Linux
-at `/etc/php/<version>/fpm/php.ini`.
+No manual `php.ini` editing is required — `install-php`, `switch-php`, and the
+Xdebug commands configure everything for you.
 
 ## Usage
 
@@ -60,12 +51,35 @@ that version via `pecl`. On Linux it installs the `php8.3-*` apt packages
 ### Enable / Disable Xdebug
 
 ```bash
-xdebug-enable      # uncomment the Xdebug zend_extension line and restart FPM
-xdebug-disable     # comment it back out and restart FPM
+xdebug-enable      # turn on step-debugging (mode=debug) and restart FPM
+xdebug-disable     # turn it off (mode=off) and restart FPM
 ```
 
-Both default to the currently active PHP version, or accept a version argument
-(e.g. `xdebug-enable 8.3`).
+These manage a single tool-owned file,
+`$(brew --prefix)/etc/php/<version>/conf.d/zz-xdebug.ini` (on Linux, the per-SAPI
+`conf.d` dirs), so your `php.ini` is never edited. `xdebug-enable` writes a ready
+-to-use debug config:
+
+```ini
+xdebug.mode=debug
+xdebug.start_with_request=trigger   ; debug only when triggered (no hijacking)
+xdebug.client_host=localhost
+xdebug.client_port=9003
+```
+
+Both commands default to the currently active PHP version, or accept one
+(e.g. `xdebug-enable 8.3`). With `trigger`, a plain `php …` runs normally; a debug
+session starts only when triggered, so Xdebug never blocks unrelated commands.
+
+**To debug**, point your IDE/editor to listen on port **9003**, then:
+
+```bash
+xdebug-run php listings.test      # CLI: triggers a debug session for this run
+```
+
+`xdebug-run` just sets `XDEBUG_TRIGGER=1` and runs your command. For web requests,
+your IDE's browser extension (the "Xdebug helper" bookmarklet/cookie) is the
+trigger — no extra step.
 
 ## Notes
 

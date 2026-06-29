@@ -63,15 +63,17 @@ ph_linked_formula() {
     esac
 }
 
-# ph_edit_inplace <expr> <file> — in-place sed across GNU (Linux) and BSD (macOS),
-# using sudo on Linux where PHP config lives under root-owned /etc/php.
-ph_edit_inplace() {
-    local expr="$1" file="$2"
-    if [ "$(ph_os)" = "macos" ]; then
-        sed -i '' "$expr" "$file"
-    else
-        sudo sed -i "$expr" "$file"
-    fi
+# ph_mkdir / ph_write_file / ph_remove_file — filesystem ops that use sudo on
+# Linux (PHP config lives under root-owned /etc/php) and run directly on macOS
+# (the Homebrew prefix is user-owned). ph_write_file reads content from stdin.
+ph_mkdir() {
+    if [ "$(ph_os)" = "macos" ]; then mkdir -p "$1"; else sudo mkdir -p "$1"; fi
+}
+ph_write_file() {
+    if [ "$(ph_os)" = "macos" ]; then cat > "$1"; else sudo tee "$1" >/dev/null; fi
+}
+ph_remove_file() {
+    if [ "$(ph_os)" = "macos" ]; then rm -f "$1"; else sudo rm -f "$1"; fi
 }
 
 # ph_current_php_version — active PHP version as MAJOR.MINOR (e.g. 8.3).
@@ -171,65 +173,81 @@ ph_list_versions() {
     fi
 }
 
-# ph_xdebug_toggle <enable|disable> [version] — comment/uncomment the Xdebug
-# zend_extension line across the version's conf.d files + php.ini, then restart
-# FPM if anything changed. Shared by xdebug-enable and xdebug-disable.
-ph_xdebug_toggle() {
-    local mode="$1" arg="${2:-}"
-    local PHP_VERSION expr grep_pat action nochange
+# Name of the conf.d file this tool owns. The `zz-` prefix makes it load LAST so
+# its xdebug.mode wins over any default, and it is the single source of truth for
+# the enabled/disabled state (its presence + content), so php.ini is never edited.
+PH_XDEBUG_INI="zz-xdebug.ini"
 
-    PHP_VERSION="$arg"
-    [ -n "$PHP_VERSION" ] || PHP_VERSION="$(ph_current_php_version || true)"
-    if ! ph_valid_version "$PHP_VERSION"; then
+# ph_xdebug_loaded_externally <version> — true if an UNCOMMENTED Xdebug
+# zend_extension line is already present in php.ini or another conf.d file (e.g.
+# the line pecl writes into php.ini), so we must not load it again ourselves.
+ph_xdebug_loaded_externally() {
+    local version="$1" dir f
+    if grep -Eq '^[[:space:]]*zend_extension[[:space:]]*=.*xdebug\.so' "$(ph_php_ini "$version")" 2>/dev/null; then
+        return 0
+    fi
+    while read -r dir; do
+        [ -d "$dir" ] || continue
+        for f in "$dir"/*.ini; do
+            [ -e "$f" ] || continue
+            [ "$(basename "$f")" = "$PH_XDEBUG_INI" ] && continue
+            grep -Eq '^[[:space:]]*zend_extension[[:space:]]*=.*xdebug\.so' "$f" && return 0
+        done
+    done < <(ph_php_confd_dirs "$version")
+    return 1
+}
+
+# ph_xdebug_toggle <enable|disable> [version] — manage the tool-owned
+# conf.d/zz-xdebug.ini. enable writes a working debug config (mode=debug + a
+# zend_extension load line only if nothing else loads Xdebug); disable sets
+# xdebug.mode=off so Xdebug goes inert no matter how it is loaded. php.ini is
+# never touched. Restarts FPM afterwards. Shared by xdebug-enable/xdebug-disable.
+ph_xdebug_toggle() {
+    local mode="$1" arg="${2:-}" version dir managed
+
+    case "$mode" in
+        enable|disable) ;;
+        *) echo "ph_xdebug_toggle: unknown mode '${mode}'" >&2; return 2 ;;
+    esac
+
+    version="$arg"
+    [ -n "$version" ] || version="$(ph_current_php_version || true)"
+    if ! ph_valid_version "$version"; then
         echo "Could not determine a valid PHP version. Pass it explicitly, e.g. xdebug-${mode} 8.3" >&2
         return 1
     fi
 
-    # [[:space:]] / \( \) are portable across GNU (Linux) and BSD (macOS) sed.
-    case "$mode" in
-        enable)
-            expr='s/^[[:space:]]*;[[:space:]]*\(zend_extension[[:space:]]*=[[:space:]]*.*xdebug\.so.*\)/\1/'
-            grep_pat='^[[:space:]]*;[[:space:]]*zend_extension[[:space:]]*=.*xdebug\.so'
-            action="Enabling"
-            nochange="No commented-out Xdebug line found (already enabled, or Xdebug not installed)."
-            ;;
-        disable)
-            expr='s/^[[:space:]]*\(zend_extension[[:space:]]*=[[:space:]]*.*xdebug\.so.*\)/;\1/'
-            grep_pat='^[[:space:]]*zend_extension[[:space:]]*=.*xdebug\.so'
-            action="Disabling"
-            nochange="No active Xdebug line found (already disabled, or Xdebug not installed)."
-            ;;
-        *) echo "ph_xdebug_toggle: unknown mode '${mode}'" >&2; return 2 ;;
-    esac
-
-    # Linux edits root-owned files; prime sudo once up front instead of mid-loop.
+    # Linux writes under root-owned /etc/php; prime sudo once up front.
     if [ "$(ph_os)" = "linux" ]; then sudo -v; fi
 
-    local candidates=() dir f php_ini changed=0
     while read -r dir; do
-        [ -d "$dir" ] || continue
-        for f in "$dir"/*.ini; do
-            [ -e "$f" ] && candidates+=("$f")
-        done
-    done < <(ph_php_confd_dirs "$PHP_VERSION")
-    php_ini="$(ph_php_ini "$PHP_VERSION")"
-    [ -e "$php_ini" ] && candidates+=("$php_ini")
-
-    for f in ${candidates[@]+"${candidates[@]}"}; do
-        if grep -Eq "$grep_pat" "$f"; then
-            echo "${action} Xdebug in ${f}..."
-            if ph_edit_inplace "$expr" "$f"; then
-                changed=1
-            else
-                echo "WARN: failed to edit ${f}, left unchanged" >&2
-            fi
+        ph_mkdir "$dir"
+        managed="${dir}/${PH_XDEBUG_INI}"
+        if [ "$mode" = "enable" ]; then
+            {
+                echo "; Managed by php-commandline-helpers (xdebug-enable / xdebug-disable). Do not edit."
+                # Only load Xdebug here if nothing else already does (avoid double-load).
+                ph_xdebug_loaded_externally "$version" || echo "zend_extension=xdebug.so"
+                echo "xdebug.mode=debug"
+                # 'trigger' so only opted-in runs debug (XDEBUG_TRIGGER / IDE
+                # cookie); plain `php` stays fast and is never hijacked.
+                echo "xdebug.start_with_request=trigger"
+                echo "xdebug.client_host=localhost"
+                echo "xdebug.client_port=9003"
+            } | ph_write_file "$managed"
+        else
+            {
+                echo "; Managed by php-commandline-helpers (xdebug-enable / xdebug-disable). Do not edit."
+                echo "xdebug.mode=off"
+            } | ph_write_file "$managed"
         fi
-    done
+    done < <(ph_php_confd_dirs "$version")
 
-    if [ "$changed" -eq 0 ]; then
-        echo "$nochange"
+    if [ "$mode" = "enable" ]; then
+        echo "Xdebug ENABLED for PHP ${version} (mode=debug, port 9003)."
     else
-        ph_restart_fpm "$PHP_VERSION"
+        echo "Xdebug DISABLED for PHP ${version} (mode=off)."
     fi
+    ph_restart_fpm "$version"
     echo "Done."
 }
