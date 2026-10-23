@@ -8,6 +8,9 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
+# Shared library lives in its own dir: ~/.local/bin/lib is not ours to own
+# (the Postman CLI, for one, replaces it wholesale on install/update).
+LIB_DIR="${HOME}/.local/share/php-commandline-helpers"
 
 os="linux"
 [ "$(uname -s)" = "Darwin" ] && os="macos"
@@ -19,14 +22,16 @@ if [ "$os" = "macos" ] && ! command -v brew >/dev/null 2>&1; then
 fi
 
 echo "Installing helpers to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}/lib"
+mkdir -p "${INSTALL_DIR}" "${LIB_DIR}"
 
 # Commands are installed without the .sh extension so they read as plain commands.
 for name in switch-php install-php xdebug-enable xdebug-disable xdebug-run; do
     cp "${REPO_DIR}/bin/${name}.sh" "${INSTALL_DIR}/${name}"
     chmod +x "${INSTALL_DIR}/${name}"
 done
-cp "${REPO_DIR}/bin/lib/common.sh" "${INSTALL_DIR}/lib/common.sh"
+cp "${REPO_DIR}/bin/lib/common.sh" "${LIB_DIR}/common.sh"
+# Remove the copy older versions installed; the commands would prefer it.
+rm -f "${INSTALL_DIR}/lib/common.sh"
 
 # Pick the right shell rc file.
 case "$(basename "${SHELL:-/bin/bash}")" in
